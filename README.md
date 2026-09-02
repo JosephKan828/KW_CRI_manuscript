@@ -212,7 +212,7 @@ $$
 This doubles the co-spectrum but cancels the quadrature spectrum:
 
 $$
-\Re(C+C^_)=2P, \qquad \Im(C+C^_)=0.
+\mathbb{R}(C+C^_)=2P, \qquad \mathbb{I}(C+C^_)=0.
 $$
 
 For example, if the phase difference is $30^\circ$, then
