@@ -59,13 +59,13 @@ $$
 The real and imaginary components are therefore
 
 $$
-\operatorname{Co}_{xy}=\Re(C_{xy})=ac+bd
+\text{Co}_{xy}=\Re(C_{xy})=ac+bd
 $$
 
 and
 
 $$
-\operatorname{Quad}_{xy}=\Im(C_{xy})=bc-ad.
+\text{Quad}_{xy}=\Im(C_{xy})=bc-ad.
 $$
 
 Writing the Fourier coefficients in amplitude-phase form,
@@ -83,27 +83,27 @@ $$
 For $\Delta\phi=\phi_x-\phi_y$, the components become
 
 $$
-\operatorname{Co}_{xy}=A_xA_y\cos(\Delta\phi)
+\text{Co}_{xy}=A_xA_y\cos(\Delta\phi)
 $$
 
 and
 
 $$
-\operatorname{Quad}_{xy}=A_xA_y\sin(\Delta\phi).
+\text{Quad}_{xy}=A_xA_y\sin(\Delta\phi).
 $$
 
 The cross-spectral magnitude and phase are consequently
 
 $$
-|C_{xy}|=\sqrt{\operatorname{Co}_{xy}^2+
-\operatorname{Quad}_{xy}^2}
+|C_{xy}|=\sqrt{\text{Co}_{xy}^2+
+\text{Quad}_{xy}^2}
 $$
 
 and
 
 $$
-\Delta\phi=\operatorname{atan2}
-\left(\operatorname{Quad}_{xy},\operatorname{Co}_{xy}\right).
+\Delta\phi=\text{atan2}
+\left(\text{Quad}_{xy},\text{Co}_{xy}\right).
 $$
 
 Because the notebook uses an inverse transform in time, this Fourier sign
