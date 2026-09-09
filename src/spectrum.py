@@ -182,3 +182,21 @@ def calculate_squared_coherence(
         where=denominator > 0,
     )
     return np.clip(coherence, 0.0, 1.0)
+
+
+def calculate_normalized_cospectrum(
+    mean_cross_spectrum: np.ndarray,
+    mean_source_power: np.ndarray,
+    mean_reference_power: np.ndarray,
+) -> np.ndarray:
+    """Return Re(<Sxy>) / sqrt(<Sxx><Syy>) with safe division."""
+    power_product = mean_source_power * mean_reference_power
+    denominator = np.full_like(power_product, np.nan, dtype=np.float64)
+    np.sqrt(power_product, out=denominator, where=power_product > 0)
+    normalized_cospectrum = np.divide(
+        np.real(mean_cross_spectrum),
+        denominator,
+        out=np.full_like(power_product, np.nan, dtype=np.float64),
+        where=power_product > 0,
+    )
+    return np.clip(normalized_cospectrum, -1.0, 1.0)
