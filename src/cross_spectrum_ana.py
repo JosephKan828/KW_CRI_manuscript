@@ -41,9 +41,24 @@ __all__ = [
     "calculate_spectral_diagnostics",
     "spectral_coordinates",
     "prepare_plot_data",
+    "average_wave_domain_coherence",
     "plot_cospectrum_with_coherence",
 ]
 
+
+# Build constant
+gravity = 9.81
+seconds_per_day = 86400.0
+earth_radius = 6.371e6
+Omega = 7.292e-5
+
+# name, zonal-wavenumber bounds, frequency bounds (cycles/day), branch index
+# A None branch denotes a rectangle without dispersion-curve clipping.
+_WAVE_DOMAINS = (
+    ("Kelvin", (3.0, 8.0), (1.0 / 20.0, 0.3), 0),
+    ("Rossby", (-8.0, -2.0), (0.02, 0.1), 1),
+    ("MJO", (1.0, 3.0), (1.0 / 90.0, 1.0 / 30.0), None),
+)
 
 def remove_time_zonal_mean(
     data: np.ndarray,
@@ -316,6 +331,95 @@ def prepare_plot_data(
     )
 
 
+def dispersion_relation(
+        zonal_wavenumbers: np.ndarray,
+        eqilivalent_depth: float
+) -> tuple[np.ndarray, ...]:
+    """Return Kelvin and n=1 equatorial Rossby frequencies in cycles/day.
+
+    Zonal wavenumbers count wavelengths around the equator; equivalent depth
+    is in metres. The Rossby relation uses the low-frequency approximation
+    with no background zonal flow.
+    """
+
+    # Kelvin waves
+    KW_dispersion: np.ndarray = (
+            np.sqrt(gravity * eqilivalent_depth)
+            * seconds_per_day
+            / (2.0 * np.pi * earth_radius)
+            * zonal_wavenumbers
+        )
+
+    # Equatorial Rossby waves, meridional mode n=1.
+    c = np.sqrt(gravity * eqilivalent_depth)
+    beta = 2.0 * Omega / earth_radius
+    k = np.asarray(zonal_wavenumbers, dtype=float) / earth_radius
+    n = 1
+    RW_dispersion: np.ndarray = (
+        -beta * k / (k**2 + (2 * n + 1) * beta / c)
+        * seconds_per_day / (2.0 * np.pi)
+    )
+
+    return KW_dispersion, RW_dispersion
+
+
+def average_wave_domain_coherence(
+    zonal_wavenumbers: np.ndarray,
+    frequencies: np.ndarray,
+    coherence_squared: np.ndarray,
+    *,
+    equivalent_depths: Sequence[float] = (8.0, 90.0),
+) -> dict[str, dict[str, float | int]]:
+    """Average squared coherence over the domains defined in _WAVE_DOMAINS.
+
+    Kelvin and Rossby (n=1) rectangles are intersected with the band between
+    the two equivalent-depth dispersion curves (depths in metres). The
+    MJO domain is a rectangle with k in [1, 3] and frequency in
+    [1/90, 1/30] cycles/day, without dispersion clipping. Bounds are inclusive.
+
+    Coordinates may be FFT-ordered or shifted; coherence must have shape
+    (frequency, wavenumber) in the same order. This is an unweighted mean of
+    finite squared-coherence bins, not coherence computed from pooled spectra.
+    Empty domains return NaN and n_bins=0; n_bins counts finite values only.
+    """
+    wavenumbers = np.asarray(zonal_wavenumbers, dtype=float)
+    frequency = np.asarray(frequencies, dtype=float)
+    values = np.asarray(coherence_squared, dtype=float)
+    depths = np.asarray(equivalent_depths, dtype=float)
+    if wavenumbers.ndim != 1 or frequency.ndim != 1:
+        raise ValueError("Wavenumber and frequency coordinates must be 1D.")
+    if not np.all(np.isfinite(wavenumbers)) or not np.all(np.isfinite(frequency)):
+        raise ValueError("Wavenumber and frequency coordinates must be finite.")
+    if values.shape != (frequency.size, wavenumbers.size):
+        raise ValueError("coherence_squared must have shape (frequency, wavenumber).")
+    if depths.shape != (2,) or not np.all(np.isfinite(depths)) or np.any(depths <= 0):
+        raise ValueError("equivalent_depths must contain two finite positive depths.")
+
+    curves = [dispersion_relation(wavenumbers, depth) for depth in depths]
+    results: dict[str, dict[str, float | int]] = {}
+    for name, k_bounds, f_bounds, branch in _WAVE_DOMAINS:
+        mask = (
+            (wavenumbers[None, :] >= k_bounds[0])
+            & (wavenumbers[None, :] <= k_bounds[1])
+            & (frequency[:, None] >= f_bounds[0])
+            & (frequency[:, None] <= f_bounds[1])
+            & np.isfinite(values)
+        )
+        if branch is not None:
+            lower = np.minimum(curves[0][branch], curves[1][branch])
+            upper = np.maximum(curves[0][branch], curves[1][branch])
+            mask &= (
+                (frequency[:, None] >= lower[None, :])
+                & (frequency[:, None] <= upper[None, :])
+            )
+        selected = values[mask]
+        results[name] = {
+            "mean_coherence_squared": float(selected.mean()) if selected.size else float("nan"),
+            "n_bins": int(selected.size),
+        }
+    return results
+
+
 def plot_cospectrum_with_coherence(
     zonal_wavenumbers: np.ndarray,
     frequencies: np.ndarray,
@@ -327,17 +431,22 @@ def plot_cospectrum_with_coherence(
     shading_levels: Sequence[float] = tuple(np.linspace(-1.0, 1.0, 21)),
     coherence_levels: Sequence[float] = (0.3, 0.5, 0.7),
     equivalent_depths: Sequence[float] = (8.0, 90.0),
+    show_wave_domains: bool = True,
     cmap: str = "RdBu_r",
     extend: str = "both",
     colorbar_label: str = "Normalized co-spectrum",
     x_limits: tuple[float, float] = (-15.0, 15.0),
     y_limits: tuple[float, float] = (0.0, 0.5),
     figure_size: tuple[float, float] = (8.0, 6.0),
+    axis: Axes | None = None,
 ) -> tuple[Figure, Axes]:
     """Plot a co-spectrum with squared-coherence contours.
 
     The function returns the figure and axes without displaying or saving
     them, leaving those choices explicit in the calling notebook.
+    By default, solid frames outline the Kelvin and n=1 Rossby averaging
+    domains between two equivalent-depth curves and the specified domain
+    limits, plus the rectangular MJO domain without dispersion clipping.
     """
     expected_shape = (frequencies.size, zonal_wavenumbers.size)
     if cospectrum.shape != expected_shape:
@@ -349,10 +458,25 @@ def plot_cospectrum_with_coherence(
             "coherence_squared must have the same shape as cospectrum."
         )
 
-    figure, axis = plt.subplots(
-        figsize=figure_size,
-        constrained_layout=True,
+    domain_means = average_wave_domain_coherence(
+        zonal_wavenumbers,
+        frequencies,
+        coherence_squared,
+        equivalent_depths=equivalent_depths,
     )
+
+    if show_wave_domains:
+        depths = np.asarray(equivalent_depths, dtype=float)
+        if depths.shape != (2,) or not np.all(np.isfinite(depths)) or np.any(depths <= 0):
+            raise ValueError("Domain frames require two finite positive equivalent depths.")
+
+    if axis is None:
+        figure, axis = plt.subplots(
+            figsize=figure_size,
+            constrained_layout=True,
+        )
+    else:
+        figure = axis.figure
     shading = axis.contourf(
         zonal_wavenumbers,
         frequencies,
@@ -360,6 +484,7 @@ def plot_cospectrum_with_coherence(
         levels=shading_levels,
         cmap=cmap,
         extend=extend,
+        alpha=0.5
     )
 
     finite_coherence = coherence_squared[np.isfinite(coherence_squared)]
@@ -376,8 +501,8 @@ def plot_cospectrum_with_coherence(
             frequencies,
             coherence_squared,
             levels=available_levels,
-            colors="black",
-            linewidths=0.8,
+            colors="green",
+            linewidths=1.5,
         )
         axis.clabel(
             contours,
@@ -386,21 +511,50 @@ def plot_cospectrum_with_coherence(
             inline=True,
         )
 
-    gravity = 9.81
-    seconds_per_day = 86400.0
-    earth_radius = 6.371e6
-    for depth in equivalent_depths:
-        dispersion_frequency = (
-            np.sqrt(gravity * depth)
-            * seconds_per_day
-            / (2.0 * np.pi * earth_radius)
-            * zonal_wavenumbers
+    if show_wave_domains:
+        domain_colors = {"Kelvin": "k", "Rossby": "k", "MJO": "k"}
+        for name, k_bounds, f_bounds, branch in _WAVE_DOMAINS:
+            # A dense grid follows the curved boundary independently of FFT bins.
+            domain_k = np.linspace(*k_bounds, 1001)
+            if branch is None:
+                lower = np.full_like(domain_k, f_bounds[0])
+                upper = np.full_like(domain_k, f_bounds[1])
+            else:
+                curves = [dispersion_relation(domain_k, depth)[branch] for depth in depths]
+                lower = np.maximum(np.minimum(curves[0], curves[1]), f_bounds[0])
+                upper = np.minimum(np.maximum(curves[0], curves[1]), f_bounds[1])
+            if not np.any(lower < upper):
+                continue
+            axis.fill_between(
+                domain_k,
+                lower,
+                upper,
+                where=lower <= upper, #type: ignore
+                interpolate=True,
+                facecolor="none",
+                edgecolor=domain_colors[name],
+                linewidth=2.5,
+                linestyle="--",
+                zorder=5,
+            )
+        domain_summary = (
+            "Mean coherence square\n\n"
+            f"$\\mathbf{{Kelvin}}$:{domain_means['Kelvin']['mean_coherence_squared']:.3f}\n"
+            f"$\\mathbf{{Rossby}}$:{domain_means['Rossby']['mean_coherence_squared']:.3f}\n"
+            f"$\\mathbf{{MJO}}$:{domain_means['MJO']['mean_coherence_squared']:.3f}"
         )
-        axis.plot(
-            zonal_wavenumbers,
-            dispersion_frequency,
-            color="royalblue",
-            linestyle="--",
+        axis.text(
+            0.98,
+            0.98,
+            domain_summary,
+            transform=axis.transAxes,
+            ha="right",
+            multialignment="left",
+            va="top",
+            fontsize=10,
+            fontfamily="monospace",
+            bbox={"facecolor": "white", "edgecolor": "black", "alpha": 0.85},
+            zorder=6,
         )
 
     axis.set(
@@ -408,10 +562,7 @@ def plot_cospectrum_with_coherence(
         ylim=y_limits,
         xlabel="Zonal wavenumber",
         ylabel="Frequency (cycles day$^{-1}$)",
-        title=(
-            f"{source_name}–{reference_name} co-spectrum "
-            "and squared coherence"
-        ),
+        title="",
     )
     figure.colorbar(shading, ax=axis, label=colorbar_label)
     return figure, axis
