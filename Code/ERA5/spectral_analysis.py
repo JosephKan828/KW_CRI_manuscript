@@ -28,14 +28,15 @@ from datetime import datetime
 import netCDF4 as nc
 import numpy as np
 from matplotlib import pyplot as plt
+from itertools import product
 from threadpoolctl import threadpool_limits
 
 # Also enforce the limit if a numerical library was loaded by the kernel.
 THREADPOOL_LIMITER = threadpool_limits(limits=CPU_THREADS)
 
 sys.path.append(str(Path(__file__).resolve().parents[2] / "src"))
-import cross_spectrum_ana as workflow
-import preprocessing as preproc
+import cross_spectrum_ana as workflow #type: ignore
+import preprocessing as preproc       #type: ignore
 
 # ====================================================
 # Data loading functions
@@ -74,10 +75,12 @@ def load_field(
         latitude: np.ndarray = preproc.as_float_array(dataset.variables["lat"][:])
         longitude: np.ndarray = preproc.as_float_array(dataset.variables["lon"][:])
         date_mask: np.ndarray = np.ones(dates.size, dtype=bool)
+        
         if START_DATE is not None:
             date_mask &= dates >= START_DATE
         if END_DATE is not None:
             date_mask &= dates < END_DATE
+        
         latitude_mask: np.ndarray = (latitude >= LATITUDE_BOUNDS[0]) & (latitude <= LATITUDE_BOUNDS[1])
 
         variable = dataset.variables[VARIABLE_KEY]
@@ -111,18 +114,12 @@ def load_analysis_fields(
         DATA_PATH / "CERES" / "column_SW_rm3harm.nc", "column_SW",
         LATITUDE_BOUNDS, START_DATE, END_DATE,
     )
-    is_omega: bool = REFERENCE_KEY in {"W", "W1", "W2"}
-    variable_key: str = "W" if is_omega else REFERENCE_KEY
-    reference_file: Path = (
-        DATA_PATH / "IMERG" / "DATA" / "IMERG_1deg.nc"
-        if REFERENCE_KEY == "precipitation"
-        else DATA_PATH / "ERA5_GRIB" / "Data" / "regrid" / f"{variable_key}.nc"
-    )
+
+    reference_file: Path = DATA_PATH / "ERA5_GRIB" / "Data" / "regrid" / f"{REFERENCE_KEY}.nc"
+    
     reference_field, reference_dates, _, _ = load_field(
-        reference_file, variable_key, LATITUDE_BOUNDS, START_DATE, END_DATE,
+        reference_file, REFERENCE_KEY, LATITUDE_BOUNDS, START_DATE, END_DATE,
     )
-    # Preserve the precipitation notebook's pairing of nearby IMERG cells.
-    # IMERG centres are 0.1 degree north of CERES; no interpolation is applied.
 
     # Match calendar days before removing means or calculating omega EOFs.
     common_dates, source_indices, reference_indices = np.intersect1d(
@@ -155,24 +152,28 @@ def prepare_components(
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     """Remove means, derive omega PCs when selected, and select meridional components."""
     source_anomalies: dict[str, np.ndarray] = {name: workflow.remove_time_zonal_mean(field) for name, field in source_fields.items()}
+
     reference_anomalies: dict[str, np.ndarray]
-    if REFERENCE_KEY in {"W", "W1", "W2"}:
-        n_times, n_levels, n_latitudes, n_longitudes = reference_field.shape
-        vertical_velocity_anomaly: np.ndarray = reference_field - np.nanmean(
-            reference_field, axis=(0, -1), keepdims=True,
-        )
-        # Retain the EOF calculation, normalization, and negative PC sign
-        # used in Qr_omega.ipynb and preprocessing.calculate_eof.
-        _, w_pcs = preproc.calculate_eof(
-            vertical_velocity_anomaly.transpose(1, 0, 2, 3).reshape(n_levels, -1),
+
+    if REFERENCE_KEY == "W":
+        
+        nt, nz, ny, nx = reference_field.shape # assigning fields
+
+        # calculate zonal and temporal anomalies
+        omega_anom: np.ndarray = reference_field - np.nanmean(reference_field, axis=(0, -1), keepdims=True)
+
+        # calculate EOFs of the omega anomalies
+        w_eofs, w_pcs = preproc.calculate_eof(
+            omega_anom.transpose(1, 0, 2, 3).reshape(nz, -1),
             n_components=2,
         )
-        reference_keys: tuple[str, ...] = ("W1", "W2") if REFERENCE_KEY == "W" else (REFERENCE_KEY,)
+
         reference_anomalies = {
-            name: -w_pcs[int(name[-1]) - 1].reshape(n_times, n_latitudes, n_longitudes)
-            for name in reference_keys
+            f"W{i+1}": -w_pcs[i].reshape(nt, ny, nx)
+            for i in range(w_pcs.shape[0])
         }
-        del vertical_velocity_anomaly
+        del omega_anom
+
     else:
         reference_anomalies = {REFERENCE_KEY: workflow.remove_time_zonal_mean(reference_field)}
 
@@ -372,9 +373,10 @@ if __name__ == "__main__":
     reference_keys = ["CWV", "W"]
     source_keys = ["QR", "LW", "SW"]
 
-    for reference_key in reference_keys:
-        for source_key in source_keys:
-            main(
+    iters: list[tuple[str, str]] = list(product(reference_keys, source_keys))
+
+    for reference_key, source_key in iters:
+        main(
                 DATA_PATH=Path("/data92/b11209013"),
                 OUTPUT_PATH=Path("/home/b11209013/Manuscript_Prep/KW_CRI/Figure/New_analysis_Figure/Spectral_Analysis"),
                 LATITUDE_BOUNDS=(-5.0, 5.0),

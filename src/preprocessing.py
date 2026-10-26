@@ -4,8 +4,10 @@
 
 import os
 import sys
+from datetime import datetime
 
 import numpy as np
+import netCDF4 as nc
 
 from sklearn.decomposition import PCA
 
@@ -28,5 +30,20 @@ def calculate_eof(data: np.ndarray, n_components: int) -> tuple[np.ndarray, np.n
     pca.fit(data.T)
     eofs = pca.components_.T
     pcs = pca.transform(data.T).T
-    
+
     return eofs, pcs
+
+def convert_time(time_variable: nc.Variable) -> np.ndarray:
+    """Read daily dates from CF time coordinates or the ERA5 YYYYMMDD format."""
+    if time_variable.units == "day as %Y%m%d.%f":
+        dates = [
+            datetime.strptime(str(int(value)), "%Y%m%d")
+            for value in time_variable[:]
+        ]
+    else:
+        dates = nc.num2date(
+            time_variable[:],
+            units=time_variable.units,
+            calendar=getattr(time_variable, "calendar", "standard"),
+        )
+    return np.asarray([date.strftime("%Y-%m-%d") for date in dates]) #type: ignore
