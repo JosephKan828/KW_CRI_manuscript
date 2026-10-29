@@ -8,6 +8,7 @@
 
 import numpy as np
 
+from collections.abc import Mapping
 from scipy.signal import detrend
 from typing import Tuple
 
@@ -106,17 +107,28 @@ def calc_cross_spectrum(
     return spectrum1 * np.conj(spectrum2)
 
 def calculate_segment_spectra(
-    source_chunks: dict[str, np.ndarray],
+    source_chunks: np.ndarray | Mapping[str, np.ndarray],
     reference_chunks: np.ndarray,
     window_energy: float,
-) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], np.ndarray]:
+) -> tuple[
+    np.ndarray | dict[str, np.ndarray],
+    np.ndarray | dict[str, np.ndarray],
+    np.ndarray,
+]:
     """Calculate latitude-mean cross- and auto-spectra per segment.
 
     All chunk arrays must be shaped (segment, time, latitude, longitude).
     Processing one segment at a time avoids large four-dimensional FFT
     temporaries. The returned spectral arrays are shaped
     (segment, frequency, zonal_wavenumber).
+
+    A single source array returns three arrays (cross, source power,
+    reference power). A mapping of sources retains the legacy dictionary
+    outputs for cross-spectra and source powers.
     """
+    array_input = isinstance(source_chunks, np.ndarray)
+    if array_input:
+        source_chunks = {"source": source_chunks}
     if reference_chunks.ndim != 4:
         raise ValueError(
             "reference_chunks must have dimensions "
@@ -128,8 +140,10 @@ def calculate_segment_spectra(
         raise ValueError("All source and reference chunks must have identical shapes.")
 
     n_segments, n_times, _, n_longitudes = reference_chunks.shape
+    if any(size == 0 for size in reference_chunks.shape):
+        raise ValueError("Chunk dimensions must all be nonempty.")
 
-    if window_energy <= 0:
+    if not np.isfinite(window_energy) or window_energy <= 0:
         raise ValueError("The window must have positive mean-square energy.")
 
     output_shape = (n_segments, n_times, n_longitudes)
@@ -165,6 +179,8 @@ def calculate_segment_spectra(
                 np.nanmean(np.abs(source_fft) ** 2, axis=1) / window_energy
             )
 
+    if array_input:
+        return cross_by_source["source"], power_by_source["source"], reference_power
     return cross_by_source, power_by_source, reference_power
 
 

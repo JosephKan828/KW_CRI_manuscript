@@ -16,6 +16,9 @@ Load and align data in a notebook, then apply these functions in sequence:
 The steps remain separate so a notebook clearly shows where preprocessing,
 spectral estimation, normalization, and plotting choices can be changed.
 All input fields are expected to be ordered as (time, latitude, longitude).
+Validation, segmentation, and spectral estimation accept a single source
+NumPy array or a mapping of named source arrays. Array inputs return arrays;
+mappings retain the named outputs used by existing notebooks.
 """
 
 from collections.abc import Mapping, Sequence
@@ -110,7 +113,7 @@ def select_meridional_component(
 
 
 def validate_aligned_fields(
-    source_fields: Mapping[str, np.ndarray],
+    source_fields: np.ndarray | Mapping[str, np.ndarray],
     reference_field: np.ndarray,
 ) -> None:
     """Validate array properties needed by the spectral calculation.
@@ -119,6 +122,8 @@ def validate_aligned_fields(
     still be compared in the notebook because arrays do not carry coordinate
     metadata.
     """
+    if isinstance(source_fields, np.ndarray):
+        source_fields = {"source": source_fields}
     if not source_fields:
         raise ValueError("At least one source field is required.")
 
@@ -150,11 +155,19 @@ def validate_aligned_fields(
 
 
 def segment_fields(
-    fields: Mapping[str, np.ndarray],
+    fields: np.ndarray | Mapping[str, np.ndarray],
     window_size: int,
     overlap_size: int,
-) -> dict[str, np.ndarray]:
-    """Detrend and Hann-window all fields into overlapping time segments."""
+) -> np.ndarray | dict[str, np.ndarray]:
+    """Detrend and Hann-window fields into overlapping time segments.
+
+    A (time, latitude, longitude) array returns an array shaped
+    (segment, time, latitude, longitude). A mapping returns a mapping of
+    chunk arrays. Only complete windows are retained.
+    """
+    array_input = isinstance(fields, np.ndarray)
+    if array_input:
+        fields = {"field": fields}
     if not fields:
         raise ValueError("At least one field is required.")
     if window_size <= 0:
@@ -183,31 +196,74 @@ def segment_fields(
             window_size=window_size,
             overlap_size=overlap_size,
         )
-    return chunks
+    return chunks["field"] if array_input else chunks
 
 
 def calculate_segment_spectra(
-    source_chunks: Mapping[str, np.ndarray],
+    source_chunks: np.ndarray | Mapping[str, np.ndarray],
     reference_chunks: np.ndarray,
     window_size: int,
-) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], np.ndarray]:
-    """Calculate cross- and auto-spectra for every windowed segment."""
+) -> tuple[
+    np.ndarray | dict[str, np.ndarray],
+    np.ndarray | dict[str, np.ndarray],
+    np.ndarray,
+]:
+    """Calculate latitude-mean cross- and auto-spectra for each segment.
+
+    Chunk arrays have shape (segment, time, latitude, longitude) and must
+    already be detrended and Hann-windowed, as returned by segment_fields.
+    Array inputs return three arrays of shape (segment, frequency,
+    zonal_wavenumber). Named source mappings retain dictionary outputs.
+    """
     if window_size <= 0:
         raise ValueError("window_size must be positive.")
+    if reference_chunks.ndim != 4 or reference_chunks.shape[1] != window_size:
+        raise ValueError(
+            "reference_chunks must have dimensions "
+            "(segment, window_size, latitude, longitude)."
+        )
     window_energy = float(np.mean(np.hanning(window_size) ** 2))
     return spectrum.calculate_segment_spectra(
-        source_chunks=dict(source_chunks),
+        source_chunks=source_chunks,
         reference_chunks=reference_chunks,
         window_energy=window_energy,
     )
 
 
 def average_segment_spectra(
-    cross_spectrum: Mapping[str, np.ndarray],
-    source_power_spectrum: Mapping[str, np.ndarray],
+    cross_spectrum: np.ndarray | Mapping[str, np.ndarray],
+    source_power_spectrum: np.ndarray | Mapping[str, np.ndarray],
     reference_power_spectrum: np.ndarray,
-) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], np.ndarray]:
-    """Average segment-level spectra, preserving frequency and wavenumber."""
+) -> tuple[
+    np.ndarray | dict[str, np.ndarray],
+    np.ndarray | dict[str, np.ndarray],
+    np.ndarray,
+]:
+    """Average spectra over segments before computing coherence.
+
+    Three (segment, frequency, zonal_wavenumber) arrays return three
+    (frequency, zonal_wavenumber) arrays. Cross-spectra are averaged as
+    complex values, preserving phase cancellation between segments.
+    Source mappings retain the legacy dictionary outputs.
+    """
+    if isinstance(cross_spectrum, np.ndarray):
+        if not isinstance(source_power_spectrum, np.ndarray):
+            raise TypeError("Cross-spectrum and source power must both be arrays or mappings.")
+        if (cross_spectrum.ndim != 3
+                or any(size == 0 for size in cross_spectrum.shape)
+                or source_power_spectrum.shape != cross_spectrum.shape
+                or reference_power_spectrum.shape != cross_spectrum.shape):
+            raise ValueError(
+                "Spectra must have matching nonempty dimensions "
+                "(segment, frequency, zonal_wavenumber)."
+            )
+        return (
+            np.nanmean(cross_spectrum, axis=0),
+            np.nanmean(source_power_spectrum, axis=0),
+            np.nanmean(reference_power_spectrum, axis=0),
+        )
+    if isinstance(source_power_spectrum, np.ndarray):
+        raise TypeError("Cross-spectrum and source power must both be arrays or mappings.")
     if cross_spectrum.keys() != source_power_spectrum.keys():
         raise ValueError(
             "Cross-spectrum and source-power dictionaries must have the same keys."
