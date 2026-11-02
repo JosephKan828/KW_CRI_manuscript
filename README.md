@@ -1,5 +1,11 @@
 # KW_CRI_manuscript
 
+The [one-slide coherence summary](docs/magnitude_squared_coherence.md)
+lists the construction and statistical-test key points. The
+[detailed methods document](docs/magnitude_squared_coherence_detailed.md)
+includes equations, implementation details, statistical limitations, and
+manuscript-ready text.
+
 ## Cross-spectrum calculation: original and revised implementations
 
 This section documents the mathematics used in `Code/Qr_Prec.ipynb` and the
